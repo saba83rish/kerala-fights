@@ -72,7 +72,7 @@ async function loadData(offset=0){
         }
 
         if(data.needfood){
-            tags.push("Need Foood");
+            tags.push("Need Food");
         }
 
         if(data.needcloth){
@@ -84,7 +84,7 @@ async function loadData(offset=0){
         }
 
         if (data.needtoilet){
-            tags.push("Need Tolilery");
+            tags.push("Need Toiletry");
         }
 
         if (data.is_request_for_others){
@@ -169,7 +169,7 @@ async function clearLocks(){
     },{
         where:{
             operatorLockAt:{
-              [Sequelize.Op.lt] : moment().subtract(10,'minutes')
+              [Sequelize.Op.lt] : moment().subtract(15,'minutes')
             }
         }
     }).then(res => {
@@ -180,86 +180,7 @@ async function clearLocks(){
         process.exit();
     })
 }
-
-async function handleContent(resp,page){ 
-    // console.log(resp);
-    var $ = cheerio.load(resp);  
-    const valList = [];
-
-    const rows = [
-        'district',
-        'location',
-        'requestee', 
-        'phone_number',
-        'date_time'
-    ];
-
-    $("table.table tr").each((idx,elem)=>{ 
-        const tds = $(elem).find('td'); 
-        if (tds.length){
-            const obj = {};
-            tds.each((idx,elem)=>{
-                const key = rows[idx];
-                if (!key){
-                    return;
-                }
-                obj[key] = $(elem).text();
-            });
-            
-            const parts = obj['district'].split('-');
-            obj['district'] = parts[0].trim();
-            obj['date_time'] = obj['date_time']
-                .replace('a.m','am')
-                .replace('p.m','pm'); 
-            obj['date_time'] = moment(obj['date_time']+" +5:30",'MMM. DD, YYYY, hh:mm a ZZ').toDate();
-
-            const link = $(elem).find('a.btn-success').attr('href');
-            const parts2 = link.split('/');
-            obj['id'] = parts2[2];
-            valList.push(obj);
-        }
-    }); 
-
-    for(var idx = 0;idx < valList.length;idx++){
-        var data = valList[idx];
-        const exists = await models.HelpRequest.findOne({
-            where:{
-                source:'www.keralarescue.in',
-                remoteId:data['id'],
-            }
-        });
-        if (exists){
-            continue;
-        }
-        const parent = await models.HelpRequest.findOne({
-            where :{
-                phoneNumber:data['phone_number']
-            }
-        });
-        const newObj = {
-            source:'www.keralarescue.in',
-            remoteId:data['id'],
-            district:data['district'],
-            personName:data['requestee'],
-            phoneNumber:data['phone_number'],
-            type:'help_request',
-            parentId:parent?parent.id:null,
-            address:data['location'],
-            json:{
-                tags:[],
-            }
-        };
-
-        if (new Date().getTime() > data['date_time'].getTime()){
-            newObj.createdAt  = data['date_time'];
-        }
-        const row = await models.HelpRequest.create(newObj);
-        console.log("Created new item",row.id);
-    }
-
-    loadFromHTML(page-1)
-}
-
+ 
 async function deDupe(){
     const list = await sequelize.query(`SELECT 
         phone_number,
@@ -288,19 +209,40 @@ async function deDupe(){
             }
         });
         console.log(data.phone_number,row.id);
-        const qry = `UPDATE help_requests 
-        SET parent_id=${row.id} WHERE phone_number = '${data.phone_number}';`;
+        let qry = `UPDATE help_requests 
+        SET parent_id=${row.id} WHERE parent_id=null  AND id != ${row.id} AND phone_number = :phone_number;`;
         console.log(qry);
-        const res = await sequelize.query(qry,{
+        let res = await sequelize.query(qry,{
+            replacements:{
+                phone_number:data.phone_number
+            },
+            plain: false,
+            raw: false,
+        });
+
+        qry = `UPDATE help_requests 
+        SET status='PHONE_DUPLICATE' WHERE 
+        status='NEW' AND phone_number = :phone_number AND id != ${row.id};`;
+        console.log(qry);
+        res = await sequelize.query(qry,{
+            replacements:{
+                phone_number:data.phone_number
+
+            },
             plain: false,
             raw: false,
         });
         row.parent_id = null;
-        row.json.duplicateCount = data.total_requests;
-        console.log(res);
+        row.json.duplicateCount = data.total_requests; 
         const saved = await row.save();
      }
      console.log('Completed updateing duplicates');
+    qry = `UPDATE help_requests  SET parent_id=NULL WHERE id=parent_id`;
+    console.log(qry);
+    res = await sequelize.query(qry,{
+        plain: false,
+        raw: false,
+    });
      process.exit();
 }
 

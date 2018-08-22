@@ -52,6 +52,16 @@ router.get('/message', function (req, res, next) {
     res.json({ title: 'Ceegees' });
 });
 
+router.get('/rescue-substatus',function(req,res){
+    sequelize.query("select status,operator_status ,count(*) from help_requests group by status,operator_status order BY status,operator_status",{
+        plain: false,
+        raw: false,
+        type: Sequelize.QueryTypes.SELECT
+    }).then(list => {
+        res.json(list);
+    })
+})
+
 router.get('/rescue-duplicates',function(req,res){
     sequelize.query(`SELECT 
         phone_number,
@@ -194,7 +204,6 @@ router.get('/sync',async(req,res) => {
                             }
                             row[colName] = val;
                         });
-
                         rows.push(row);
                     }
 
@@ -346,8 +355,7 @@ router.post('/rescue-update',function(req,res){
             statusOut:status,
             comments:""+comments + "\nSeverity: " +severity,
         });
-    }).then(workLog=>{
-        console.log(currentMove);
+    }).then(workLog=>{ 
         rescue.status = currentMove.target.toUpperCase();
         rescue.operatorStatus = status;
         rescue.operatorSeverity = severity;
@@ -363,88 +371,133 @@ router.post('/rescue-update',function(req,res){
     });
 });
 
+router.get('/my-activity',function(req,res){
+    models.WorkLog.findAll({
+        where:{
+            actorId:item.id
+        },
+        order:[
+            ['createdAt','DESC']
+        ],
+        include :[ { 
+            model: models.User ,as:'actor' 
+        }]
+    }).then(list => {
+        res.json(list);
+    })
+});
 
 router.get('/rescue-list',function(req,res){
-    const params = filterFromQuery(req.query,{status:'NEW'})
+    const params = filterFromQuery(req.query,{status:''})
     params.status = params.status.toLowerCase();
     const state = statusList.find(i => i.key == params.status);
-    let whereQuery = null;
+    let whereQuery = {};
+
     if (params.status == 'duplicates'){
         if (params.q){
             whereQuery = {
                 [Op.or] : {
                     parentId:params.q,
                     id:params.q
-                }
+                },    
             }
         } else {
-            whereQuery = {
+            whereQuery = { 
                 parentId:{
                     [Op.ne] :null
-                }
-            }
+                },
+                status:{
+                    [Op.ne]:'RESOLVED'
+                } 
+            }  
         }
-        
     } else if (req.query.q){
-        const parts = req.query.q.split('-');
-        const ors = {
-            phoneNumber:{
-                [Op.eq]: req.query.q
-            },
-            personName:{
-                [Op.like]:`${req.query.q}%`
-            },
-            district:{
-                [Op.like]:`${req.query.q}%`
+        const query = req.query.q.toLowerCase();
+        let ors = {}
+        const parts = query.split('-');
+
+        if (query.indexOf("id:") > -1){
+            ors.id = query.replace("id:","");
+        } else if (query.indexOf('kr:') > -1) {
+            ors.remoteId = query.replace('kr:','');
+        } else if (query.indexOf("info:") > -1) {
+            const info = query.replace("info:","");
+            ors.information = {
+                [Op.iLike]: `%${info}%`
             }
-        } 
-        if (!isNaN(parts[0]) && (""+parts[0]).length < 8){
+            ors.address = {
+                [Op.iLike]: `%${info}%`
+            }
+        } else if(query.indexOf('src:') > -1 ) {
+            ors.source = {
+                [Op.iLike]: `%${query.replace('src:','')}%`
+            }
+        } else {
+            ors.phoneNumber = {
+                [Op.iLike]: `${query}%`
+            };
+            ors.personName = {
+                [Op.iLike]:`${query}%`
+            };
             ors.id = parts[0];
             ors.parentId = parts[0];
             ors.remoteId = parts[0];
         }
+ 
+        ['id','parentId','remoteId'].forEach(name => {
+            if (isNaN(ors[name])) {
+                delete(ors[name]);
+            }
+        })
+
         whereQuery = {
            [Op.or] :ors
         } 
-    } else {
-        if (!state){
-            res.json(jsonError("Invalid status"));
-        }
-        whereQuery = {
-            status: {
-                [Op.in]:state.db
-            },
-            parentId:null
-        };
+    }
 
-        if (req.query.district){
-            whereQuery.district = req.query.district;
-        }
-        if (req.query.startAt && req.query.endAt){
-            whereQuery.createdAt = {
-                [Op.between] : [
-                    moment.unix(req.query.startAt/1000).toDate(),
-                    moment.unix(req.query.endAt/1000).toDate()
-                ]
-            }
+    if (req.query.location){ 
+        whereQuery.latLng = {
+            [Op.ne] :null
         }
     }
 
-    if (req.query.location){
-        whereQuery = { 
-            latLng: {
-                [Op.ne] :null
-            }
+    if (req.query.severity){
+        whereQuery.operatorSeverity = req.query.severity;
+    }
+    
+    if (state){
+        whereQuery.status = state.db;
+    }
+
+    if (req.query.requestType){
+        whereQuery.type = req.query.requestType;
+    }
+
+    if (req.query.district){
+        whereQuery.district = req.query.district;
+    }
+
+    if (req.query.startAt && req.query.endAt){
+        whereQuery.createdAt = {
+            [Op.between] : [
+                moment.unix(req.query.endAt/1000).toDate(),
+                moment.unix(req.query.startAt/1000).toDate()
+            ]
         }
-        if (state){
-            whereQuery.status = state.db;
-        }
+    }
+
+    const result = {
+        total:0,
+        demand:0,
+        page:params.page,
+        per_page:params.per_page,
     }
 
     models.HelpRequest.findAll({
         where:whereQuery,
         order:[ 
             ['operatorLockAt','DESC NULLS FIRST'],
+            ['operatorUpdatedAt','DESC NULLS FIRST'],
             ['createdAt','DESC']
         ],
         offset:(params.page -1)*params.per_page,
@@ -453,22 +506,24 @@ router.get('/rescue-list',function(req,res){
             model: models.User ,as:'operator' 
         }]
     }).then(list => {
+        result.list = list;
         return models.HelpRequest.count({
             where:whereQuery,
-        }).then(count => {
-            return {
-                total:count,
-                page:params.page,
-                page_max:Math.floor( count /params.per_page),
-                per_page:params.per_page,
-                list:list
-            }
-        })
-    }).then(data =>{
+        });
+    }).then(count => {
+        result.total = count;
+        result.page_max = Math.floor( count /params.per_page);
+        return models.HelpRequest.sum('people_count',{
+            where:whereQuery,
+        });
+    }).then(total => {
+        result.demand = total; 
         res.json(jsonSuccess(
-            data
+            result
         ));
-    });
+    }).catch(ex => {
+        res.json(jsonError(ex.message))
+    })
 });
 
 router.post('/resuce-edit',function(req,res){
@@ -493,8 +548,11 @@ router.post('/resuce-edit',function(req,res){
             rescue.personName = data.personName;
             rescue.phoneNumber = data.phoneNumber;
             rescue.address = data.address;
-            rescue.memberCount = data.memberCount;
-            rescue.latLng= {
+            rescue.peopleCount = data.peopleCount;
+            if (data.type){
+                rescue.type = data.type;
+            }
+            rescue.latLng = {
                 type:'Point',
                 coordinates:[
                    parseFloat(""+ data.location_lat),
@@ -527,9 +585,9 @@ router.post('/resuce-edit',function(req,res){
                 location_lon : data.location_lon, 
                 google_address:data.address_components
             });
+            rescue.json = JSON.parse(JSON.stringify(rescue.json));
             return rescue.save();
         }).then(data => {
-            
             res.json(jsonSuccess(data));
         }).catch(ex =>{
             console.log(ex);
@@ -538,6 +596,30 @@ router.post('/resuce-edit',function(req,res){
           
 })
 
+router.get('/angels',function(req,res){
+    sequelize.query(`SELECT
+    users.name as name,
+    users.profile_link as picture,
+    Res.total as total  FROM
+    (
+        SELECT 
+            actor_id, count(*) as total  
+        FROM 
+            work_logs 
+        GROUP BY
+            actor_id 
+        ORDER BY 
+            total DESC limit 10
+    ) Res
+    INNER JOIN users ON users.id = Res.actor_id
+    ORDER BY Res.total DESC;`, {
+        plain: false,
+        raw: false,
+        type: Sequelize.QueryTypes.SELECT
+    }).then(list => {
+        res.json(list);
+    })
+});
 router.post('/add-rescue',function(req,res){ 
     try {
         const data = req.body;        
@@ -547,7 +629,7 @@ router.post('/add-rescue',function(req,res){
             district: data.district,
             type : data.help_type,
             location:data.location,
-            memberCount:data.member_count,
+            peopleCount:data.member_count,
             address:data.address +"\n"+ data.alternate_numbers,
             powerBackup:data.power_backup,
             information:data.member_details,
@@ -578,11 +660,7 @@ router.post('/add-rescue',function(req,res){
             }
         };
         models.HelpRequest.create(passed).then(resp => {
-            res.json(jsonSuccess({
-                db:resp,
-                passed:passed,
-                send:data
-            } ));
+            res.json(jsonSuccess(resp,'A new case Id - '+ resp.id + ' is generated for you.  Please use this for any future reference '));
         })
     }catch(ex){
         console.log(ex);
@@ -633,6 +711,8 @@ router.post('/rescue/volunteer/register', function(req,res) {
     let longitude = req.body.longitude;
     let info = req.body.info;
 
+    const phoneRegExp = /^[0-9]{10}$/; 
+
     if (!name) {
         return res.json({
             success: false,
@@ -642,6 +722,11 @@ router.post('/rescue/volunteer/register', function(req,res) {
         return res.json({
             success: false,
             message: "Phone Number is required"
+        });
+    } else if (!phoneNumber.match(phoneRegExp)) {
+        return res.json({
+            success: false,
+            message: "Invalid Phone Number"
         });
     } else if (!type) {
         return res.json({
@@ -696,11 +781,19 @@ router.post('/rescue/volunteer/status/update', function(req,res) {
     let latitude = req.body.latitude;
     let longitude = req.body.longitude;
     let status = req.body.status;
+    let info = req.body.info;
+
+    const phoneRegExp = /^[0-9]{10}$/; 
 
     if (!phoneNumber) {
         return res.json({
             success: false,
             message: "Phone Number is required"
+        });
+    } else if (!phoneNumber.match(phoneRegExp)) {
+        return res.json({
+            success: false,
+            message: "Invalid Phone Number"
         });
     } else if (!latitude || !longitude) {
         return res.json({
@@ -720,7 +813,8 @@ router.post('/rescue/volunteer/status/update', function(req,res) {
         return resVol.update({
             'latitude': latitude,
             'longitude': longitude,
-            'status': (status)?'ACTIVE':'INACTIVE'
+            'status': (status)?'ACTIVE':'INACTIVE',
+            'info': info
         });
     }).then(result => {
         res.json({
@@ -737,7 +831,84 @@ router.post('/rescue/volunteer/status/update', function(req,res) {
 
 
 
+router.post('/add-service-provider',function(req,res) {
+    try {
+        const data = req.body;        
+        const passed = {
+            contactName: data.contactName,
+            phoneNumber: data.phoneNumber,
+            type: data.type,
+            address: data.address,
+            peopleCount: data.peopleCount,
+            kidsCount: data.kidsCount,
+            maleCount: data.maleCount,
+            femaleCount: data.femaleCount,
+            information: data.information,
+            latLng: {
+                type: 'Point',
+                coordinates: [data.location_lat,data.location_lon]
+            },
+            latitude: data.location_lat,
+            longitude: data.location_lon,
+            serviceEndDate: data.serviceEndDate
+        };
+
+        models.MarkedLocation.create(passed).then(resp => {
+            res.json(jsonSuccess({
+                db: resp,
+                passed: passed,
+                send: data
+            }));
+        });
+    } catch(ex){
+        console.log(ex);
+        res.json(jsonError('Missing parameters' , {...req.body}) );
+    }   
+});
+
+
+router.get('/service-provider-list',function(req,res){
+    const params = filterFromQuery(req.query);
+    let whereQuery = null;
+    
+    if (req.query.q) {
+        const ors = {
+            phoneNumber: {
+                [Op.like]: `${req.query.q}%`
+            },
+            contactName: {
+                [Op.like]:`${req.query.q}%`
+            }
+        }
+        whereQuery = {
+           [Op.or]: ors
+        } 
+    }
+
+    models.MarkedLocation.findAll({
+        where: whereQuery,
+        order: [
+            ['createdAt','DESC']
+        ],
+        offset: (params.page -1)*params.per_page,
+        limit: params.per_page
+    }).then(list => {
+        return models.MarkedLocation.count({
+            where: whereQuery,
+        }).then(count => {
+            return {
+                total: count,
+                page: params.page,
+                page_max: Math.floor(count /params.per_page),
+                per_page: params.per_page,
+                list: list
+            }
+        })
+    }).then(data =>{
+        res.json(jsonSuccess(
+            data
+        ));
+    });
+});
+
 module.exports = router;
-
-
-

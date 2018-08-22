@@ -14,15 +14,14 @@
     }
 }
 #app {
-    background:#EDEDED;
-    padding-top:20px
+    background:#EDEDED; 
 }
 .kf-top-bar{
    border-bottom:solid 6px #EDEDED
 }
 
 .kf-top-bar-filter {
-    margin-top: 35px
+ 
 }
 
 .kf-top-bar-filter .kf-carot {
@@ -37,6 +36,25 @@
     top: -3px;
 }
 
+// .header-top-bar{
+//     .w3-bar-item {
+//         //  margin:0px 2px;
+//     }
+// }
+
+.google-maps-supply {
+    position: relative;
+    padding-bottom: 75%; // This is the aspect ratio
+    height: 0;
+    overflow: hidden;
+}
+.google-maps-supply iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100% !important;
+    height: 100% !important;
+}
 .kf-top-bar-filter .w3-dropdown-content {
     position: fixed;
 }
@@ -75,7 +93,15 @@
         vertical-align: top;
     }
 }
+.kf-request-item{
+    word-wrap: break-word;
+}
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+
+.kf-manage-container {
+    min-height: 100vh;
+    padding-bottom: 100px;
 }
